@@ -2,3 +2,6 @@
 algo/transfer_learning/__pycache__
 config/__pycache__/
 config/main.py
+transfer_learning/__pycache__/
+transfer_learning/test.py
+transfer_learning/tensorboard/

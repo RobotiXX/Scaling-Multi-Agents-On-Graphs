@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import utils
 import argparse
 import time
+from fractions import Fraction
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -34,7 +35,7 @@ class MultiCombinationGraph:
         self.total_graphs_without_risk = []
         self.mim_distance_to_goal = mim_distance_to_goal
         self.num_nodes = num_nodes
-        self.risk_edge_ratio = risk_edge_ratio
+        self.risk_edge_ratio = Fraction(risk_edge_ratio).limit_denominator()
 
     # you have only one graph     
     def add_list_of_connnected_graph_without_risk(self):
@@ -58,48 +59,66 @@ class MultiCombinationGraph:
             if nx.is_connected(G):
                 # Check that the distance between start_node and goal_node is at least min_distance
                 distance = nx.shortest_path_length(G, source=start_node, target=goal_node)
-                if distance >= self.mim_distance_to_goal:
+                # self.mim_distance_to_goal = 2 # 2: 254, 3: 54, 4: 6
+                self.mim_distance_to_goal = 3
+                if distance >= self.mim_distance_to_goal and G not in connected_graphs_without_risk:
                     connected_graphs_without_risk.append(G)
-
+            
         if connected_graphs_without_risk != []:
             self.total_graphs_without_risk = connected_graphs_without_risk
+            # for idx, graph in enumerate(self.total_graphs_without_risk):
+            #     print("Graph ", idx) 
+            #     print("Edges",graph.edges())
+            # print("Total combinations of graphs without risk edges: ", len(self.total_graphs_without_risk))
             return self.total_graphs_without_risk
         raise ValueError("No connected graphs without risk edges found")
     
     def add_list_of_connnected_graph_with_risk(self):
-
         # Create a new list to store graphs with risky edges
         connected_graphs_with_risk = []
 
         if self.total_graphs_without_risk !=[]:
             self.total_graphs_without_risk = self.add_list_of_connnected_graph_without_risk()
-
+        print("------------------Add Risky Edges Started--------------------------")
+        print("\n\n\n\n")
         # Add "risky" edges to each connected graph
-        for G_old in self.total_graphs_without_risk:
+        max_no_of_edges = 10
+        factor = max_no_of_edges -1
+        for idx, G_old in enumerate(self.total_graphs_without_risk):
             edges = list(G_old.edges())
-            num_risky_edges = len(edges) // 2  # 1/2 of total edges to be risky
+            # print("Graph", idx)
+            # print("Edges", edges)
+
+            num_risky_edges = len(edges) //2  # 1/2 of total edges to be risky
             all_combinations_of_risky_edges = list(itertools.combinations(edges, num_risky_edges))
-            if len(all_combinations_of_risky_edges) > 0:
+            # print("all_combinations_of_risky_edges", all_combinations_of_risky_edges)
+            if len(all_combinations_of_risky_edges) > 0 and len(edges) <=10: # optional check
             
                 for risky_edges in all_combinations_of_risky_edges:
 
                     G_new = G_old.copy()
+                    print(G_old.edges()==G_new.edges())
                     # Add unique edges from G_new.edges() to unique_edges
                     G_new.graph['unique_edges'] = sorted(list(G_new.edges()))
+                    print("G_new.graph['unique_edges']", G_new.graph['unique_edges'])
                     # Add risky edges as a graph attribute
                     G_new.graph['risk_edges'] = risky_edges  
+                    print("G_new.graph['risk_edges']", G_new.graph['risk_edges'])
+                    print("len(G_new.graph['risk_edges'])", len(G_new.graph['risk_edges']))
                     # Add risky edges with support nodes as another graph attribute
                     G_new.graph['risk_edges_with_support_nodes'] = {edge: edge for edge in risky_edges}
-                    connected_graphs_with_risk.append(G_new)
+                    # print("G_new.graph['risk_edges_with_support_nodes']", G_new.graph['risk_edges_with_support_nodes'])
+                    if len(G_new.graph['risk_edges_with_support_nodes']) > 0 and G_new not in connected_graphs_with_risk:
+                        connected_graphs_with_risk.append(G_new)
 
 
-                if connected_graphs_with_risk != []:
-                    self.total_graphs_with_risk = connected_graphs_with_risk
-                    print("self.total_graphs_with_risk", self.total_graphs_with_risk)
-                    return self.total_graphs_with_risk
-                raise ValueError("No connected graphs with risk edges found")
-                
-    
+        if connected_graphs_with_risk != []:
+            self.total_graphs_with_risk = connected_graphs_with_risk
+            # print("self.total_graphs_with_risk", self.total_graphs_with_risk)
+            return self.total_graphs_with_risk
+        raise ValueError("No connected graphs with risk edges found")
+        
+
     def save_list_of_connnected_graph_with_risk(self):
         # Save graph to a pickle file
         utils.save_to_pickle_file(self.total_graphs_with_risk, '5_nodes_graph.pkl')
@@ -155,6 +174,8 @@ class MultiCombinationGraphWorldEnv(gym.Env):
         self.agent_position = [0]*self.num_agents
         self.goal_position = [len(self.nodes)-1]*self.num_agents
 
+        self.total_paths_taken = []
+
         # print("agent_position: ", self.agent_position_one_hot)
         # print("goal_position: ", self.goal_position_one_hot)
         # print("reset return: ", self.observation)
@@ -186,7 +207,8 @@ class MultiCombinationGraphWorldEnv(gym.Env):
         return one_agent_new_position, one_agent_prev_position, valid_move
         
     
-    def step(self, action): 
+    
+    def step(self, action, risky=True): 
         print("-------------New Step Started-----------------")
         # Store the previous position for to add penalty if agent didnt move
         prev_position = self.agent_position.copy()
@@ -197,23 +219,69 @@ class MultiCombinationGraphWorldEnv(gym.Env):
         new_position1, _, validmove1 = self.single_agent_step(action1, 0)
         new_position2, _ , validmove2 = self.single_agent_step(action2, 1)
 
+        # either of this is okay when doing action masking
         new_position = [new_position1, new_position2]
-        
-        new_position = action.copy().tolist()
+        # new_position = action.copy().tolist()
         done = False
         truncated = False
 
-        ## only if both the agents are able to move then only it will be valid move
-        ## reward shaping
         step_cost = 0
         wall_penalty = 0
         coordination_reward = 0
+        non_coordination_penalty = 0 # to do
         goal_reward = 0
+        path_length_penalty = 0 # to do
         distance_to_goal_reward = 0
+
+    
+        if not np.array_equal(new_position, prev_position):
+    
+            edge1 = (prev_position[0], new_position[0])
+            edge2 = (prev_position[1], new_position[1])   
+            print("edge1: ", edge1)
+            print("edge2: ", edge2)
+            # both moves, when both moves no support mechanism is used
+            if prev_position[0] != new_position[0] and prev_position[1] != new_position[1]:
+                print("both moves")
+                ## both moves in risky
+                if edge1 in self.risky_edges_with_support_nodes.keys() \
+                    and edge2 in self.risky_edges_with_support_nodes.keys():
+                    coordination_reward = -5
+                ## if one moves in risky and other in safe
+                elif edge1 in self.risky_edges_with_support_nodes.keys() \
+                    or edge2 in self.risky_edges_with_support_nodes.keys():
+                    coordination_reward = -5
+                ## both moves in safe
+                else:
+                    coordination_reward = +1
+            ## 1st stay, 2nd move 
+            elif prev_position[0] == new_position[0] and prev_position[1] != new_position[1]:
+                print("1st stay, 2nd move")
+                if edge2 in self.risky_edges_with_support_nodes.keys():
+                    support_nodes = self.risky_edges_with_support_nodes[edge2]
+                    print("support_nodes: ", support_nodes)
+                    ## (no support mechanism is used)
+                    if prev_position[0] not in support_nodes:
+                        coordination_reward = -5 # -3, +1 also works
+                    ## (support mechanism is used)
+                    elif prev_position[0] in support_nodes:
+                        coordination_reward = +2
+            ## 2nd stay, 1st move
+            elif prev_position[0] != new_position[0] and prev_position[1] == new_position[1]:
+                print("2nd stay, 1st move")
+                if edge1 in self.risky_edges_with_support_nodes.keys():
+                    support_nodes = self.risky_edges_with_support_nodes[edge1]
+                    print("support_nodes: ", support_nodes)
+                    ## (no support mechanism is used)
+                    if prev_position[1] not in support_nodes:
+                        coordination_reward = -5
+                    ## (support mechanism is used)
+                    elif prev_position[1] in support_nodes:
+                        coordination_reward = +2
 
 
         ## distance to goal reward, TO DO
-        epsilon = 100
+        epsilon = - 0.05 #(closer to goal, higher reward, less negative value)
         total_distance_to_goal = 0
         for agent_id in range(self.num_agents):
                 shortest_path_length = self.graph.shortest_path_length(
@@ -222,40 +290,39 @@ class MultiCombinationGraphWorldEnv(gym.Env):
                 total_distance_to_goal += shortest_path_length
 
         avg_distance_to_goal = total_distance_to_goal / self.num_agents
-        distance_to_goal_reward = 1 / (avg_distance_to_goal + epsilon)
+        distance_to_goal_reward =  epsilon * avg_distance_to_goal
 
         print("avg_distace_to_goal", avg_distance_to_goal)
         print("distance_to_goal_reward", distance_to_goal_reward)
+        print("coordination_reward", coordination_reward)
+
 
         ## wall/stagnant penalty plus no coordination
         if np.array_equal(new_position, prev_position):
-            reward = -1 + distance_to_goal_reward                          # wall_penalty + step_cost
-            # reward = -1               
+            wall_penalty = -5               
             self.agent_position = prev_position
             new_agent_obs = self.observation.copy()
         else:
-            
-            
-            # time.sleep(5)
             if new_position == self.goal_position:
                 done = True
-                reward = +10 # 100, -1, -10 or 10, -0.01, -1
-
-            ## step cost
+                goal_reward = +10
             else:
-                reward = -0.01 + distance_to_goal_reward                   # step_cost + distance_to_goal_reward
-                # reward = -0.01
-
-            # reward = step_cost + wall_penalty + coordination_reward + distance_to_goal_reward + goal_reward
+                step_cost = -0.01
+            
             new_agent_obs = self.create_new_observation()
             # time.sleep(100)
+            self.agent_position = new_position
             self.agent_position = new_position
             for agent_id in range(self.num_agents):
                 new_agent_obs[agent_id][action[agent_id]] = 1
     
+        if risky:
+            reward = step_cost + wall_penalty + coordination_reward*(-distance_to_goal_reward) + distance_to_goal_reward + goal_reward
+        else:
+            reward = step_cost + wall_penalty + distance_to_goal_reward + goal_reward
         self.observation = new_agent_obs
         
-    
+
         print("------------------------------")
         print("prev_position: ", prev_position)
         print("action: ", action)
@@ -263,11 +330,101 @@ class MultiCombinationGraphWorldEnv(gym.Env):
         print("new position: ", new_position)
         print("new obs:", new_agent_obs)
         print("------------------------------")
+        self.total_paths_taken.append(new_position)
         new_obs = np.array(new_agent_obs).flatten()
         if done == True:
             print("done: ", done)
+            print("graph edges: ", self.graph.graph.edges())
+            print("risk edges with support: ", self.risky_edges_with_support_nodes)
+            print("total_paths_taken: ", self.total_paths_taken)
+            # time.sleep(1)
         print("-------------New Step Done-----------------")
         return new_obs, reward, done, truncated , {}
+    # def step(self, action, ris): 
+    #     print("-------------New Step Started-----------------")
+    #     # Store the previous position for to add penalty if agent didnt move
+    #     prev_position = self.agent_position.copy()
+       
+    #     ## this doesnot affect due to current action masking
+    #     action1 = action[0]
+    #     action2 = action[1]
+    #     new_position1, _, validmove1 = self.single_agent_step(action1, 0)
+    #     new_position2, _ , validmove2 = self.single_agent_step(action2, 1)
+
+    #     new_position = [new_position1, new_position2]
+        
+    #     new_position = action.copy().tolist()
+    #     done = False
+    #     truncated = False
+
+    #     ## only if both the agents are able to move then only it will be valid move
+    #     ## reward shaping
+    #     step_cost = 0
+    #     wall_penalty = 0
+    #     coordination_reward = 0
+    #     goal_reward = 0
+    #     distance_to_goal_reward = 0
+
+
+    #     ## distance to goal reward, TO DO
+    #     epsilon = 100
+    #     total_distance_to_goal = 0
+    #     for agent_id in range(self.num_agents):
+    #             shortest_path_length = self.graph.shortest_path_length(
+    #                 new_position[agent_id], self.goal_position[agent_id]
+    #             )
+    #             total_distance_to_goal += shortest_path_length
+
+    #     avg_distance_to_goal = total_distance_to_goal / self.num_agents
+    #     distance_to_goal_reward = 1 / (avg_distance_to_goal + epsilon)
+
+    #     print("avg_distace_to_goal", avg_distance_to_goal)
+    #     print("distance_to_goal_reward", distance_to_goal_reward)
+
+    #     ## wall/stagnant penalty plus no coordination
+    #     if np.array_equal(new_position, prev_position):
+    #         reward = -1 + distance_to_goal_reward                          # wall_penalty + step_cost
+    #         # reward = -1               
+    #         self.agent_position = prev_position
+    #         new_agent_obs = self.observation.copy()
+    #     else:
+            
+            
+    #         # time.sleep(5)
+    #         if new_position == self.goal_position:
+    #             done = True
+    #             reward = +10 # 100, -1, -10 or 10, -0.01, -1
+
+    #         ## step cost
+    #         else:
+    #             reward = -0.01 + distance_to_goal_reward                   # step_cost + distance_to_goal_reward
+    #             # reward = -0.01
+
+    #         # reward = step_cost + wall_penalty + coordination_reward + distance_to_goal_reward + goal_reward
+    #         new_agent_obs = self.create_new_observation()
+    #         # time.sleep(100)
+    #         self.agent_position = new_position
+    #         for agent_id in range(self.num_agents):
+    #             new_agent_obs[agent_id][action[agent_id]] = 1
+    
+    #     self.observation = new_agent_obs
+        
+    
+    #     print("------------------------------")
+    #     print("prev_position: ", prev_position)
+    #     print("action: ", action)
+    #     print("reward: ", reward)
+    #     print("new position: ", new_position)
+    #     print("new obs:", new_agent_obs)
+    #     print("------------------------------")
+    #     self.total_paths_taken.append(new_position)
+    #     new_obs = np.array(new_agent_obs).flatten()
+    #     if done == True:
+    #         print("done: ", done)
+    #         print("total_paths_taken: ", self.total_paths_taken)
+    #         time.sleep(1)
+    #     print("-------------New Step Done-----------------")
+    #     return new_obs, reward, done, truncated , {}
     
     def valid_action_mask(self):
         print("--------inside generate_masks--------")
@@ -290,25 +447,26 @@ class MultiCombinationGraphWorldEnv(gym.Env):
         pass
     def close(self):
         return super().close()
-
+import os
 # save and load the traing graph data
 def load_graph_data(args):
     print("------------------Load Graph Data Started--------------------------")
     GS = MultiCombinationGraph(args.mim_distance_to_goal, args.num_of_nodes, args.risk_edge_ratio)
-    ### save combination of graphs with risky edges to a pickle file
-    GS.add_list_of_connnected_graph_without_risk()  # <---- Call this first
-    GS.add_list_of_connnected_graph_with_risk() # <---- Call this second
-    GS.save_list_of_connnected_graph_with_risk() # <---- Call this third
+    if not os.path.exists('../../data/5_nodes_graph.pkl'):
+        ### save combination of graphs with risky edges to a pickle file
+        GS.add_list_of_connnected_graph_without_risk()  # <---- Call this first
+        GS.add_list_of_connnected_graph_with_risk() # <---- Call this second
+        GS.save_list_of_connnected_graph_with_risk() # <---- Call this third
     ### load combination of graphs with risky edges from a pickle file
     loaded_G_data = GS.load_list_of_connnected_graph_with_risk() # <---- Call this fourth
     
 
-    for i in range(len(loaded_G_data)):
-        print("Graph ", i)
-        print("Nodes",loaded_G_data[i].nodes())
-        print("Edges",loaded_G_data[i].graph['unique_edges'])
-        print("Risk Edges",loaded_G_data[i].graph['risk_edges'])
-        print("Risk Edges with support nodes",loaded_G_data[i].graph['risk_edges_with_support_nodes'])
+    # for i in range(len(loaded_G_data)):
+    #     print("Graph ", i)
+    #     print("Nodes",loaded_G_data[i].nodes())
+    #     print("Edges",loaded_G_data[i].graph['unique_edges'])
+    #     print("Risk Edges",loaded_G_data[i].graph['risk_edges'])
+    #     print("Risk Edges with support nodes",loaded_G_data[i].graph['risk_edges_with_support_nodes'])
 
     print("Number of connected graphs total: ", len(GS.total_graphs_without_risk))
     print("Number of connected graphs with risk edges: ", len(loaded_G_data))
@@ -349,8 +507,9 @@ def train_multiple_env(train_graphs, tensorboard_log):
 
     # Shuffle the training graphs
     random.shuffle(train_graphs)
+    train_graphs = train_graphs[:1]
 
-    policy_kwargs = dict(net_arch=[dict(pi=[128, 128], vf=[128, 128])])
+    policy_kwargs = dict(net_arch=[dict(pi=[128]*2, vf=[128]*2)])
     batch_size = 6  
     # Initialize model outside of loop
     first_graph = train_graphs[0]
@@ -368,7 +527,7 @@ def train_multiple_env(train_graphs, tensorboard_log):
                         device=device,
                         policy_kwargs=policy_kwargs,
                         verbose=1,
-                        n_steps=1000,
+                        n_steps=200,
                         tensorboard_log=tensorboard_log)
     
     # Batching   
@@ -400,7 +559,7 @@ def train_sequential_env(train_graphs, tensorboard_log):
     print("------------------Train Started--------------------------")
     # Shuffle the training graphs
     random.shuffle(train_graphs)
-    train_graphs = train_graphs[:2]
+    # train_graphs = train_graphs[:1]
 
    
 
@@ -416,13 +575,13 @@ def train_sequential_env(train_graphs, tensorboard_log):
                         edges=edges, 
                         risky_edges_with_support=risk_edges_with_support_nodes)
     first_env = ActionMasker(first_env, mask_fn)
-    policy_kwargs = dict(net_arch=[dict(pi=[128, 128], vf=[128, 128])])
+    policy_kwargs = dict(net_arch=[dict(pi=[128]*3, vf=[128]*3)])
     model = MaskablePPO(MaskableActorCriticPolicy,
                         env=first_env,
                         device=device,
                         policy_kwargs=policy_kwargs,
                         verbose=1,
-                        n_steps=100, 
+                        n_steps=200, 
                         tensorboard_log=tensorboard_log)
 
     for graph in train_graphs:
@@ -437,11 +596,14 @@ def train_sequential_env(train_graphs, tensorboard_log):
         env = ActionMasker(env, mask_fn)  # If you're using action masking
 
         model.set_env(env)
-        model.learn(total_timesteps=10000, use_masking=True)
+        model.learn(total_timesteps=20000, use_masking=True)
+
 
     # Save the final model
     model.save("model/ppo_sequential_envs_multicombination_graphworld")
     del model # remove to demonstrate saving and loading
+
+    print("Trained total graphs: ", len(train_graphs))
     print("------------------Train Done--------------------------")
 
 def evaluate_env(test_graphs, train_type="sequential"):
@@ -450,15 +612,12 @@ def evaluate_env(test_graphs, train_type="sequential"):
     random.shuffle(test_graphs)
 
     # Initialize model outside of loop
-    test_graph = test_graphs[0] # you can do random choice here
-    nodes = test_graph.nodes()
-    edges = test_graph.graph['unique_edges']
-    risk_edges_with_support_nodes = test_graph.graph['risk_edges_with_support_nodes']
+    test_graph = test_graphs[0] # you can do random choice here or test of multiple test graphs
     test_env = gym.make('MultiCombinationGraph-v0',
                         n_agents=2,
-                        nodes=nodes, 
-                        edges=edges, 
-                        risky_edges_with_support=risk_edges_with_support_nodes)
+                        nodes=test_graph.nodes(),
+                        edges=test_graph.edges(),
+                        risky_edges_with_support=test_graph.graph['risk_edges_with_support_nodes'])
     test_env = ActionMasker(test_env, mask_fn)
 
     if train_type == "parallel":
@@ -483,6 +642,8 @@ def evaluate_env(test_graphs, train_type="sequential"):
             break
     print("total_steps: ", total_steps)
     print("total_path: ", total_path)
+    print("edges: ", test_graph.edges())
+    print("risk_edges_with_support_nodes: ", test_graph.graph['risk_edges_with_support_nodes'])
     print("------------------Test Done--------------------------")
 
 def arg_parse():
@@ -533,8 +694,10 @@ if __name__ == "__main__":
 
 
     ## data loading
-    train_G_data = load_graph_data(args)
-    print("train_G_data", train_G_data)
+    all_G_data = load_graph_data(args)
+    train_G_data = all_G_data[:5000]
+    eval_G_data = all_G_data[5000:5020]
+    print("train_G_data", len(train_G_data))
     ## data sampling
     # sample one graph from the training data
     sampled_G = random.choice(train_G_data)
@@ -545,14 +708,15 @@ if __name__ == "__main__":
     print("sampled_G", sampled_G)
     print("edges", edges)
     print("risk_edges_with_support_nodes", risk_edges_with_support_nodes)
+    # time.sleep(1000)
     ## Enable TensorBoard logging
     tensorboard_log = "./tensorboard_log/"+str(args.num_of_agents)+"_agents_"+str(args.num_of_nodes)+"_nodes/"
 
     ## Sequential training
-    ## train the model
+    # train the model
     train_sequential_env(train_G_data, tensorboard_log) # works
-    # evaluate the model
-    evaluate_env(train_G_data, train_type="sequential") # works
+    # # # evaluate the model
+    # evaluate_env(train_G_data, train_type="sequential") # works
 
 
     ## Parallel training
