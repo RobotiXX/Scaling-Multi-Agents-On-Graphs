@@ -400,8 +400,11 @@ class CustomGridWorld(gym.Env):
             self.agent_position = new_position
             for agent_id in range(self.num_agents):
                 new_agent_obs[agent_id][action[agent_id]] = 1
-    
-        reward = step_cost + wall_penalty + coordination_reward*(-distance_to_goal_reward) + distance_to_goal_reward + goal_reward
+        ## old, a bit flaky sometimes    
+        # reward = step_cost + wall_penalty + coordination_reward*(-distance_to_goal_reward) + distance_to_goal_reward + goal_reward
+        ## new updated
+        reward = step_cost + wall_penalty*(-distance_to_goal_reward) + coordination_reward*(-distance_to_goal_reward) + distance_to_goal_reward + goal_reward
+      
         self.observation = new_agent_obs
         
     
